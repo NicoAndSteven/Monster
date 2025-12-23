@@ -7,6 +7,8 @@ export interface Novel {
   description?: string
   cover?: string
   updated_at?: string
+  outline?: string
+  type?: string
 }
 
 export const useProjectStore = defineStore('project', () => {
@@ -47,7 +49,7 @@ export const useProjectStore = defineStore('project', () => {
     localStorage.removeItem('monster_active_project_id')
   }
 
-  const createProject = async (title: string, description: string) => {
+  const createProject = async (title: string, description: string, type?: string) => {
     const newId = Date.now().toString()
     try {
       const res = await fetch(`${API_BASE}/novels`, {
@@ -56,7 +58,8 @@ export const useProjectStore = defineStore('project', () => {
         body: JSON.stringify({
           id: newId,
           title: title,
-          description: description
+          description: description,
+          type: type
         })
       })
       

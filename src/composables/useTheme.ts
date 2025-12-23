@@ -76,10 +76,16 @@ export function useTheme() {
       root.style.setProperty(key, value)
     }
     currentTheme.value = theme
+    localStorage.setItem('monster-theme', theme)
   }
 
   // Initialize
-  applyTheme(currentTheme.value)
+  const savedTheme = localStorage.getItem('monster-theme') as Theme
+  if (savedTheme && themes[savedTheme]) {
+      applyTheme(savedTheme)
+  } else {
+      applyTheme(currentTheme.value)
+  }
 
   return {
     currentTheme,

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive, watch } from 'vue'
-import { Search, User, PictureFilled, Headset, VideoCamera, Plus } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, reactive, watch, nextTick, onUnmounted } from 'vue'
+import { Search, User, PictureFilled, Headset, VideoCamera, Plus, MagicStick, Reading, Connection } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { useProjectStore } from '@/stores/projectStore'
+import { marked } from 'marked'
+import * as echarts from 'echarts'
 
 const activeTab = ref('knowledge')
 const projectStore = useProjectStore()
@@ -11,6 +13,17 @@ const API_BASE = 'http://localhost:8000/api'
 // Data
 const assets = ref<any[]>([])
 const loading = ref(false)
+const analyzing = ref(false)
+
+// Graph
+const chartRef = ref<HTMLElement>()
+let chartInstance: echarts.ECharts | null = null
+
+// Wiki Dialog
+const wikiDialogVisible = ref(false)
+const currentWikiAsset = ref<any>(null)
+const isGeneratingWiki = ref(false)
+const wikiContent = ref('')
 
 // Create Dialog State
 const createDialogVisible = ref(false)
@@ -26,6 +39,193 @@ const createRules = reactive<FormRules>({
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   role: [{ required: true, message: '请输入角色定位', trigger: 'blur' }]
 })
+
+const refreshingAsset = ref<string | null>(null)
+
+// Graph Logic
+const initGraph = (data?: { nodes: any[], links: any[] }) => {
+  if (!chartRef.value) return
+  if (chartInstance) chartInstance.dispose()
+  chartInstance = echarts.init(chartRef.value)
+
+  let nodes: any[] = []
+  let links: any[] = []
+
+  if (data && data.nodes && data.nodes.length > 0) {
+      nodes = data.nodes.map((n, i) => ({
+          ...n,
+          id: n.name,
+          itemStyle: { color: i % 2 === 0 ? '#d4af37' : '#ff0050' },
+          symbolSize: n.symbolSize || 30
+      }))
+      links = data.links
+  } else {
+      // Fallback
+      nodes = filteredCharacters.value.map((char, index) => ({
+        id: char.name,
+        name: char.name,
+        symbolSize: 50,
+        category: 0,
+        itemStyle: { color: index % 2 === 0 ? '#d4af37' : '#ff0050' },
+        value: char.role
+      }))
+  }
+
+  const option = {
+    backgroundColor: 'transparent',
+    title: {
+      text: '人物关系图谱',
+      textStyle: { color: '#fff' },
+      left: 'center'
+    },
+    tooltip: {},
+    animationDurationUpdate: 1500,
+    animationEasingUpdate: 'quinticInOut' as any,
+    series: [
+      {
+        type: 'graph',
+        layout: 'force',
+        symbolSize: 50,
+        roam: true,
+        label: { show: true, color: '#fff' },
+        edgeSymbol: ['circle', 'arrow'],
+        edgeSymbolSize: [4, 10],
+        edgeLabel: { fontSize: 12, color: '#ccc' },
+        data: nodes,
+        links: links,
+        lineStyle: { opacity: 0.9, width: 2, curveness: 0.1 },
+        force: { repulsion: 1000, edgeLength: 200 }
+      }
+    ]
+  }
+  chartInstance.setOption(option)
+}
+
+const fetchGraphData = async () => {
+    if (!projectStore.currentProject) return
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/relationships`)
+        if (res.ok) {
+            const data = await res.json()
+            initGraph(data)
+        } else {
+            initGraph()
+        }
+    } catch (e) {
+        initGraph()
+    }
+}
+
+watch(activeTab, (newTab) => {
+    if (newTab === 'relationship') {
+        nextTick(() => {
+            fetchGraphData()
+        })
+    }
+
+})
+
+// Resize chart on window resize
+window.addEventListener('resize', () => {
+    chartInstance?.resize()
+})
+
+onUnmounted(() => {
+    window.removeEventListener('resize', () => {
+        chartInstance?.resize()
+    })
+    chartInstance?.dispose()
+})
+
+// Methods
+const openWiki = (asset: any) => {
+    currentWikiAsset.value = asset
+    wikiContent.value = asset.details || ''
+    wikiDialogVisible.value = true
+}
+
+const generateWiki = async () => {
+    if (!currentWikiAsset.value) return
+    isGeneratingWiki.value = true
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject!.id}/assets/${currentWikiAsset.value.id}/wiki`, {
+            method: 'POST'
+        })
+        if (res.ok) {
+            const data = await res.json()
+            wikiContent.value = data.data.details
+            currentWikiAsset.value.details = data.data.details
+            // Update in list
+            const idx = assets.value.findIndex(a => a.id === currentWikiAsset.value.id)
+            if (idx !== -1) {
+                assets.value[idx] = data.data
+            }
+            ElMessage.success('百科词条生成成功')
+        } else {
+            ElMessage.error('生成失败')
+        }
+    } catch (e) {
+        ElMessage.error('网络错误')
+    } finally {
+        isGeneratingWiki.value = false
+    }
+}
+
+const handleRefreshAsset = async (asset: any) => {
+    refreshingAsset.value = asset.id
+    ElMessage.info(`正在重新分析角色：${asset.name}...`)
+    
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject!.id}/assets/${asset.name}/refresh`, {
+            method: 'POST'
+        })
+        
+        if (res.ok) {
+            const data = await res.json()
+            if (data.status === 'success') {
+                ElMessage.success('角色信息已更新')
+                loadAssets()
+            } else {
+                ElMessage.info('未发现新信息')
+            }
+        } else {
+            ElMessage.error('更新失败')
+        }
+    } catch (e) {
+        ElMessage.error('请求出错')
+    } finally {
+        refreshingAsset.value = null
+    }
+}
+
+const autoAnalyzeAssets = async () => {
+    if (!projectStore.currentProject) return
+    
+    analyzing.value = true
+    ElMessage.info('正在分析最新章节内容以提取资产...')
+    
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/analyze-assets`, {
+            method: 'POST'
+        })
+        
+        if (res.ok) {
+            const data = await res.json()
+            if (data.new_assets_count > 0 || data.updated_assets_count > 0) {
+                ElMessage.success(`分析完成：新增 ${data.new_assets_count} 个资产，更新 ${data.updated_assets_count} 个资产`)
+                loadAssets()
+            } else {
+                ElMessage.info('分析完成，未发现新的资产变更')
+            }
+        } else {
+            ElMessage.error('分析失败')
+        }
+    } catch (e) {
+        ElMessage.error('请求出错')
+    } finally {
+        analyzing.value = false
+    }
+}
 
 // Fetch Assets
 const loadAssets = async () => {
@@ -69,6 +269,7 @@ const characters = computed(() => {
 })
 
 const mediaAssets = computed(() => {
+  // Now includes audio
   return assets.value.filter(a => ['audio', 'video', 'image'].includes(a.type))
 })
 
@@ -136,68 +337,69 @@ const handleCreateCharacter = async (formEl: FormInstance | undefined) => {
 }
 
 
-const editCharacter = (char: any) => {
-  ElMessageBox.prompt('修改角色名称', '编辑角色', {
-    confirmButtonText: '保存',
-    cancelButtonText: '取消',
-    inputValue: char.name,
-  })
-    .then(({ value }) => {
-      char.name = value
-      ElMessage.success('角色信息已更新')
+const deleteAsset = async (id: number) => {
+  if (!projectStore.currentProject) return
+  
+  try {
+    await ElMessageBox.confirm('确定要删除这个资源吗？', '提示', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
     })
-    .catch(() => {})
+    
+    const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/assets/${id}`, {
+      method: 'DELETE'
+    })
+    
+    if (res.ok) {
+      ElMessage.success('删除成功')
+      loadAssets()
+    } else {
+      ElMessage.error('删除失败')
+    }
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error('请求出错')
+    }
+  }
+}
+
+// const deleteMedia = deleteAsset -> Removed, use deleteAsset directly
+
+
+  const editCharacter = (char: any) => {
+   ElMessageBox.prompt('修改角色名称', '编辑角色', {
+     confirmButtonText: '保存',
+     cancelButtonText: '取消',
+     inputValue: char.name,
+   }).then(async () => {
+     // TODO: Implement full edit, for now just name
+     ElMessage.info('暂仅支持删除操作，完整编辑功能开发中')
+   }).catch(() => {})
 }
 
 const previewMedia = (item: any) => {
   ElMessage.success(`正在预览: ${item.name}`)
 }
 
-const deleteMedia = async (id: number) => {
-  if (!projectStore.currentProject) return
 
-  ElMessageBox.confirm(
-    '确定要删除该资源吗？此操作无法撤销。',
-    '警告',
-    {
-      confirmButtonText: '确定删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    }
-  )
-    .then(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject!.id}/assets/${id}`, {
-          method: 'DELETE'
-        })
-        
-        if (res.ok) {
-          ElMessage.success('资源已删除')
-          // Reload assets to update computed properties
-          await loadAssets()
-        } else {
-          ElMessage.error('删除失败')
-        }
-      } catch (e) {
-        ElMessage.error('请求出错')
-      }
-    })
-    .catch(() => {
-      ElMessage.info('已取消删除')
-    })
-}
 </script>
 
 <template>
   <div class="library-view animate__animated animate__fadeIn">
     <div class="header-actions">
       <h2>资产中心</h2>
-      <el-input
-        v-model="filterText"
-        placeholder="搜索资产..."
-        :prefix-icon="Search"
-        class="search-input"
-      />
+      <div class="header-right" style="display: flex; gap: 10px;">
+          <el-button type="warning" :icon="MagicStick" :loading="analyzing" @click="autoAnalyzeAssets">
+            智能提取/更新资产
+          </el-button>
+          <el-input
+            v-model="filterText"
+            placeholder="搜索资产..."
+            :prefix-icon="Search"
+            class="search-input"
+          />
+      </div>
     </div>
 
     <div class="library-container glass-effect">
@@ -214,7 +416,17 @@ const deleteMedia = async (id: number) => {
               <div class="card-image">
                 <img :src="char.img" :alt="char.name" />
                 <div class="hover-overlay">
+                  <el-button size="small" type="primary" :icon="Reading" @click="openWiki(char)">百科</el-button>
                   <el-button size="small" @click="editCharacter(char)">编辑</el-button>
+                  <el-button size="small" type="danger" @click="deleteAsset(char.id)">删除</el-button>
+                  <el-button 
+                    size="small" 
+                    type="warning" 
+                    :loading="refreshingAsset === char.id"
+                    @click="handleRefreshAsset(char)"
+                  >
+                    更新
+                  </el-button>
                 </div>
               </div>
               <div class="card-info">
@@ -235,7 +447,20 @@ const deleteMedia = async (id: number) => {
           </div>
         </el-tab-pane>
 
-        <!-- Tab 2: Multimedia -->
+        <!-- Tab 2: Relationship Graph -->
+        <el-tab-pane name="relationship">
+            <template #label>
+                <span class="tab-label"><el-icon><Connection /></el-icon> 关系图谱</span>
+            </template>
+            <div class="graph-wrapper">
+                <div ref="chartRef" class="chart-container"></div>
+                <div class="graph-controls" v-if="filteredCharacters.length === 0">
+                    <el-empty description="暂无角色数据，请先在【角色库】添加角色" />
+                </div>
+            </div>
+        </el-tab-pane>
+
+        <!-- Tab 3: Multimedia -->
         <el-tab-pane name="multimedia">
           <template #label>
             <span class="tab-label"><el-icon><PictureFilled /></el-icon> 多媒体仓库</span>
@@ -250,12 +475,15 @@ const deleteMedia = async (id: number) => {
               </div>
               <div class="media-info">
                 <h5>{{ item.name }}</h5>
-                <p>时长: {{ item.duration }}</p>
-                <p class="date">{{ item.date }}</p>
+                <p>{{ item.role }}</p> <!-- Description -->
+                <p class="date" v-if="item.file_path">
+                    <audio v-if="item.type === 'audio'" controls :src="`http://localhost:8000/data/${item.file_path}`" style="width: 100%; height: 30px; margin-top: 5px;"></audio>
+                </p>
               </div>
               <div class="media-actions">
-                 <el-button link type="primary" @click="previewMedia(item)">预览</el-button>
-                 <el-button link type="danger" @click="deleteMedia(item.id)">删除</el-button>
+                 <el-button v-if="item.type !== 'audio'" link type="primary" @click="previewMedia(item)">预览</el-button>
+                 <!-- Audio has inline controls -->
+                 <el-button link type="danger" @click="deleteAsset(item.id)">删除</el-button>
               </div>
             </div>
           </div>
@@ -296,6 +524,38 @@ const deleteMedia = async (id: number) => {
           </el-button>
         </span>
       </template>
+    </el-dialog>
+
+    <!-- Wiki Dialog -->
+    <el-dialog
+      v-model="wikiDialogVisible"
+      :title="currentWikiAsset?.name + ' - 百科档案'"
+      width="700px"
+      align-center
+      class="custom-dialog wiki-dialog"
+    >
+      <div v-if="currentWikiAsset" class="wiki-container">
+          <div class="wiki-header">
+              <div class="wiki-avatar-wrapper" v-if="currentWikiAsset.img">
+                 <img :src="currentWikiAsset.img" class="wiki-avatar"/>
+              </div>
+              <div class="wiki-basic-info">
+                  <h3>{{ currentWikiAsset.name }}</h3>
+                  <p class="role-tag">{{ currentWikiAsset.role }}</p>
+                  <div class="tags">
+                      <span v-for="tag in currentWikiAsset.tags" :key="tag" class="tag">{{ tag }}</span>
+                  </div>
+              </div>
+              <div class="wiki-actions">
+                  <el-button type="primary" :loading="isGeneratingWiki" @click="generateWiki" :icon="MagicStick">
+                      {{ currentWikiAsset.details ? '重新生成' : '生成百科词条' }}
+                  </el-button>
+              </div>
+          </div>
+          <el-divider />
+          <div class="wiki-content markdown-body" v-html="marked.parse(wikiContent)" v-if="wikiContent"></div>
+          <el-empty v-else description="暂无详细百科信息，请点击右上角生成" />
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -363,6 +623,76 @@ const deleteMedia = async (id: number) => {
   flex: 1;
   overflow: hidden;
   padding: 1.5rem; /* Add padding here for content */
+}
+
+/* Graph Styles */
+.graph-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+.chart-container {
+    width: 100%;
+    height: 600px; /* Fixed height or flex */
+    min-height: 500px;
+}
+.graph-controls {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* Wiki Dialog Styles */
+.wiki-container {
+    color: var(--text-color);
+}
+.wiki-header {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+    margin-bottom: 20px;
+}
+.wiki-avatar {
+    width: 100px;
+    height: 100px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 2px solid var(--primary-color);
+}
+.wiki-basic-info {
+    flex: 1;
+}
+.wiki-basic-info h3 {
+    margin: 0 0 5px 0;
+    font-size: 1.5rem;
+}
+.role-tag {
+    color: var(--primary-color);
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+.wiki-content {
+    line-height: 1.8;
+    max-height: 500px;
+    overflow-y: auto;
+    padding-right: 10px;
+}
+/* Basic Markdown Styles for Wiki */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+    color: var(--primary-color);
+}
+.markdown-body ul {
+    padding-left: 20px;
+}
+.markdown-body strong {
+    color: var(--text-color);
+    font-weight: 700;
 }
 
 :deep(.el-tab-pane) {

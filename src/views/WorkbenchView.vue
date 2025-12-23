@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
-import { MagicStick, Fold, Expand, VideoPlay, Plus, Delete, Document, List, Download, ArrowDown } from '@element-plus/icons-vue'
+import { MagicStick, Fold, Expand, VideoPlay, Plus, Delete, Document, List, Download, ArrowDown, Picture, Headset } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/stores/projectStore'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
+import { BubbleMenu } from '@tiptap/vue-3/menus'
+import BubbleMenuExtension from '@tiptap/extension-bubble-menu'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 
@@ -17,6 +19,7 @@ const currentChapterId = ref<number | null>(null)
 const generatedText = ref('')
 const isSaving = ref(false)
 const projectAssets = ref<any[]>([])
+const isAiEditing = ref(false)
 
 // Tiptap Editor Setup
 const editor = useEditor({
@@ -25,6 +28,9 @@ const editor = useEditor({
     StarterKit,
     Placeholder.configure({
       placeholder: '开始创作...',
+    }),
+    BubbleMenuExtension.configure({
+        pluginKey: 'bubbleMenu',
     }),
   ],
   onUpdate: ({ editor }) => {
@@ -37,16 +43,66 @@ const editor = useEditor({
   },
 })
 
+const handleAiEdit = async (instruction: string) => {
+    if (!editor.value) return
+    
+    // Get selected text
+    const { from, to } = editor.value.state.selection
+    const selectedText = editor.value.state.doc.textBetween(from, to)
+    
+    if (!selectedText) {
+        ElMessage.warning('请先选择要处理的文字')
+        return
+    }
+
+    isAiEditing.value = true
+    try {
+        const res = await fetch(`${API_BASE}/ai/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text: selectedText,
+                instruction: instruction
+            })
+        })
+
+        if (res.ok) {
+            const data = await res.json()
+            if (data.result) {
+                // Replace selection with new text
+                editor.value.commands.insertContent(data.result)
+                ElMessage.success('AI 修改完成')
+            }
+        } else {
+            ElMessage.error('请求失败')
+        }
+    } catch (e) {
+        ElMessage.error('网络错误')
+    } finally {
+        isAiEditing.value = false
+    }
+}
+
+
 // Image Generation
 const imagePrompt = ref("请描述你想生成的图片内容")
-const generatedImage = ref("https://via.placeholder.com/512x512.png?text=AI+Generated+Image")
+const generatedImage = ref("https://placehold.co/512x512?text=AI+Generated+Image")
 const isGeneratingImage = ref(false)
+const chapterImages = ref<any[]>([])
+const plotChoices = ref<string[]>([])
+const showPlotChoiceDialog = ref(false)
+const targetChapterNum = ref<number>(0)
+const isFetchingChoices = ref(false)
+
+// Audio
+const isPlayingAudio = ref(false)
+const audioUrl = ref('')
+const audioPlayer = ref<HTMLAudioElement | null>(null)
 
 // Lifecycle
 onMounted(() => {
   if (projectStore.currentProject) {
     loadChapters(projectStore.currentProject.id)
-    loadAssets(projectStore.currentProject.id)
   }
 })
 
@@ -60,26 +116,67 @@ onBeforeUnmount(() => {
 watch(() => projectStore.currentProject, (newVal) => {
   if (newVal) {
     loadChapters(newVal.id)
-    loadAssets(newVal.id)
   } else {
     chapters.value = []
     currentChapterId.value = null
     generatedText.value = ''
-    projectAssets.value = []
+    chapterImages.value = []
     editor.value?.commands.setContent('')
   }
 })
 
 // Methods
-const loadAssets = async (novelId: string | number) => {
-  try {
-    const res = await fetch(`${API_BASE}/novels/${novelId}/assets`)
-    if (res.ok) {
-      projectAssets.value = await res.json()
+const playChapterAudio = async () => {
+    if (!editor.value) return
+    const text = editor.value.getText()
+    if (!text.trim()) {
+        ElMessage.warning('章节内容为空')
+        return
     }
-  } catch (e) {
-    console.error("Failed to load assets", e)
-  }
+
+    if (isPlayingAudio.value) {
+        audioPlayer.value?.pause()
+        isPlayingAudio.value = false
+        return
+    }
+
+    ElMessage.info('正在合成并保存语音...')
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject!.id}/chapters/${currentChapterId.value}/generate-audio`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        })
+        
+        if (res.ok) {
+            const data = await res.json()
+            // Backend returns asset object with file_path relative to storage root (which is mounted as /data? No, wait)
+            // The file_path in asset is "novels/{id}/audio/{filename}"
+            // We mounted "data" directory to "/data" in backend
+            // But wait, storage path is "d:\Monster\monster\data". 
+            // So if asset.file_path is "novels/...", full path is "d:\Monster\monster\data\novels..."
+            // So URL should be "http://localhost:8000/data/novels/..."
+            
+            audioUrl.value = `http://localhost:8000/data/${data.asset.file_path}`
+            ElMessage.success('语音已保存至资产中心')
+            
+            // Wait for DOM update
+            setTimeout(() => {
+                if (audioPlayer.value) {
+                    audioPlayer.value.play()
+                    isPlayingAudio.value = true
+                }
+            }, 100)
+        } else {
+            ElMessage.error('语音合成失败')
+        }
+    } catch (e) {
+        ElMessage.error('请求出错')
+    }
+}
+
+const handleAudioEnded = () => {
+    isPlayingAudio.value = false
 }
 
 const loadChapters = async (novelId: string | number) => {
@@ -123,6 +220,7 @@ const loadChapterContent = async (novelId: string | number, chapterId: number) =
       const data = await res.json()
       generatedText.value = data.content || ''
       editor.value?.commands.setContent(data.content || '')
+      chapterImages.value = data.images || []
     }
   } catch (e) {
     console.error("Failed to load content", e)
@@ -198,42 +296,110 @@ const regenerateImage = async () => {
   }
 }
 
+const saveToGallery = async () => {
+    if (!projectStore.currentProject || !currentChapterId.value) return
+    
+    const newImage = {
+        id: `img_${Date.now()}`,
+        prompt: imagePrompt.value,
+        url: generatedImage.value,
+        segment_text: "用户手动生成"
+    }
+    
+    // Add to local state
+    chapterImages.value.push(newImage)
+    
+    // Update chapter with new images list
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/chapters/${currentChapterId.value}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                images: chapterImages.value
+            })
+        })
+        
+        if (res.ok) {
+            ElMessage.success('已保存到插图画廊')
+        } else {
+            ElMessage.error('保存失败')
+        }
+    } catch (e) {
+        ElMessage.error('请求出错')
+    }
+}
 
 const handleAIContinue = async () => {
   if (!projectStore.currentProject) return
   
   // Determine next chapter number
   const nextChapterNum = chapters.value.length + 1
-  
-  ElMessage.info(`正在生成第 ${nextChapterNum} 章...`)
-  
+
+  // 1. Fetch Plot Choices first
+  isFetchingChoices.value = true
+  ElMessage.info('正在构思剧情走向...')
+
   try {
-    const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/generate`, {
+    const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/plot-choices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify({ 
         chapter_num: nextChapterNum,
-        prompt: `Chapter ${nextChapterNum}`, // Use prompt if available
-        mode: 'api' // or 'rpa' if supported
+        context_window: 2000 
       })
     })
-    
+
     if (res.ok) {
       const data = await res.json()
-      // Refresh chapters
-      await loadChapters(projectStore.currentProject.id)
+      // Backend returns a list directly or an object with choices. Handle both.
+      // Assuming backend returns list directly based on code inspection.
+      // But keeping fallback to data.choices just in case.
+      plotChoices.value = Array.isArray(data) ? data : (data.choices || [])
       
-      // Switch to new chapter
-      currentChapterId.value = nextChapterNum
-      generatedText.value = data.chapter.content
-      editor.value?.commands.setContent(data.chapter.content)
-      ElMessage.success('生成成功')
+      targetChapterNum.value = nextChapterNum
+      showPlotChoiceDialog.value = true
     } else {
-      ElMessage.error('生成失败')
+      ElMessage.error('获取剧情选项失败')
     }
   } catch (e) {
     ElMessage.error('请求出错')
+    console.error(e)
+  } finally {
+    isFetchingChoices.value = false
   }
+}
+
+const confirmGeneration = async (choice: string) => {
+    showPlotChoiceDialog.value = false
+    if (!projectStore.currentProject) return
+
+    const nextChapterNum = targetChapterNum.value
+    ElMessage.info(`正在根据选择生成第 ${nextChapterNum} 章...`)
+
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chapter_num: nextChapterNum,
+                plot_choice: choice,
+                mode: 'api'
+            })
+        })
+
+        if (res.ok) {
+            const data = await res.json()
+            await loadChapters(projectStore.currentProject.id)
+            currentChapterId.value = nextChapterNum
+            generatedText.value = data.chapter.content
+            editor.value?.commands.setContent(data.chapter.content)
+            ElMessage.success('生成成功')
+        } else {
+            ElMessage.error('生成失败')
+        }
+    } catch (e) {
+        ElMessage.error('请求出错')
+    }
 }
 
 const handleCreateChapter = async () => {
@@ -409,9 +575,13 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
                     <el-button size="small" :class="{ 'is-active': editor.isActive('bulletList') }" @click="editor.chain().focus().toggleBulletList().run()">
                         <el-icon><List /></el-icon>
                     </el-button>
+                    <el-button size="small" :type="isPlayingAudio ? 'primary' : 'default'" @click="playChapterAudio" title="朗读章节">
+                        <el-icon><Headset /></el-icon>
+                    </el-button>
                 </div>
               </div>
               <div class="editor-actions">
+                <audio ref="audioPlayer" :src="audioUrl" @ended="handleAudioEnded" style="display: none;"></audio>
                 <el-button type="primary" link @click="handleAIContinue">
                   <el-icon class="mr-1"><MagicStick /></el-icon> AI 创作
                 </el-button>
@@ -422,6 +592,7 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
                     <template #dropdown>
                         <el-dropdown-menu>
                             <el-dropdown-item command="docx">导出 Word (.docx)</el-dropdown-item>
+                            <el-dropdown-item command="epub">导出 EPUB (.epub)</el-dropdown-item>
                             <el-dropdown-item command="txt">导出 Text (.txt)</el-dropdown-item>
                         </el-dropdown-menu>
                     </template>
@@ -429,6 +600,19 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
               </div>
             </div>
             <div class="editor-scroll-area">
+              <bubble-menu
+                  v-if="editor"
+                  :editor="editor"
+                  :tippy-options="{ duration: 100 }"
+                  class="ai-bubble-menu"
+                >
+                  <el-button-group>
+                    <el-button size="small" type="primary" @click="handleAiEdit('请润色这段文字，使其更加生动细腻')">润色</el-button>
+                    <el-button size="small" type="success" @click="handleAiEdit('请扩写这段文字，增加细节描写')">扩写</el-button>
+                    <el-button size="small" type="warning" @click="handleAiEdit('请精简这段文字，保留核心信息')">精简</el-button>
+                    <el-button size="small" type="info" @click="handleAiEdit('请修正这段文字中的错别字和语病')">纠错</el-button>
+                  </el-button-group>
+              </bubble-menu>
               <editor-content :editor="editor" class="tiptap-editor" />
             </div>
           </div>
@@ -437,6 +621,17 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
         <!-- Right: Preview & Assets -->
         <div class="preview-column">
           <el-tabs class="preview-tabs">
+            <el-tab-pane label="大纲" name="outline">
+                 <div class="outline-content-wrapper">
+                     <div v-if="projectStore.currentProject?.outline" class="outline-text">
+                         {{ projectStore.currentProject.outline }}
+                     </div>
+                     <div v-else class="no-outline">
+                         <el-empty description="大纲生成中或未创建大纲" />
+                         <p class="hint-text">大纲生成可能需要几秒钟，请稍候刷新页面。</p>
+                     </div>
+                 </div>
+            </el-tab-pane>
             <el-tab-pane label="实时绘图" name="image">
                 <div class="preview-content">
                     <div class="image-box" v-loading="isGeneratingImage">
@@ -449,24 +644,43 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
                         <el-button type="primary" size="small" :icon="VideoPlay" :loading="isGeneratingImage" @click="regenerateImage">
                         生成
                         </el-button>
+                        <el-button type="success" size="small" :icon="Plus" @click="saveToGallery">
+                        保存到画廊
+                        </el-button>
                     </div>
                     </div>
                 </div>
             </el-tab-pane>
-            <el-tab-pane label="资产参考" name="assets">
-                <div class="assets-list">
-                    <div v-for="asset in projectAssets" :key="asset.id" class="asset-card">
-                        <div class="asset-header">
-                            <span class="asset-type">{{ asset.type === 'character' ? '角色' : '场景' }}</span>
-                            <span class="asset-name">{{ asset.name }}</span>
-                        </div>
-                        <div class="asset-role">{{ asset.role }}</div>
-                        <div class="asset-tags">
-                            <el-tag size="small" v-for="tag in asset.tags" :key="tag" class="mr-1">{{ tag }}</el-tag>
+            <el-tab-pane label="插图画廊" name="gallery">
+                <div class="gallery-container">
+                    <div class="gallery-grid" v-if="chapterImages.length > 0">
+                        <div v-for="img in chapterImages" :key="img.id" class="gallery-item">
+                             <div class="gallery-img-wrapper">
+                                 <el-image 
+                                    :src="img.url" 
+                                    :preview-src-list="[img.url]"
+                                    fit="cover"
+                                    loading="lazy"
+                                 >
+                                    <template #error>
+                                        <div class="image-slot">
+                                            <el-icon><Picture /></el-icon>
+                                        </div>
+                                    </template>
+                                 </el-image>
+                             </div>
+                             <div class="gallery-info">
+                                 <p class="gallery-prompt" :title="img.prompt">{{ img.prompt }}</p>
+                                 <p class="gallery-segment" :title="img.segment_text">对应文本: {{ img.segment_text }}</p>
+                             </div>
                         </div>
                     </div>
-                     <div v-if="projectAssets.length === 0" class="no-assets">
-                        暂无资产，请去资产中心添加
+                    <div v-else class="no-images">
+                         <el-empty description="本章暂无插图">
+                             <template #extra>
+                                 <p class="hint-text">请在“实时绘图”中生成满意的图片并保存</p>
+                             </template>
+                         </el-empty>
                     </div>
                 </div>
             </el-tab-pane>
@@ -475,10 +689,77 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
 
       </div>
     </main>
+    <!-- Plot Choice Dialog -->
+    <el-dialog
+      v-model="showPlotChoiceDialog"
+      title="选择剧情走向"
+      width="600px"
+      align-center
+      class="custom-dialog"
+    >
+      <div class="plot-choices" v-if="plotChoices.length > 0">
+        <p class="choice-hint">AI 为您构思了以下三种发展方向，请选择一项：</p>
+        <div 
+          v-for="(choice, index) in plotChoices" 
+          :key="index" 
+          class="choice-card"
+          @click="confirmGeneration(choice)"
+        >
+          <span class="choice-index">{{ index + 1 }}</span>
+          <p class="choice-text">{{ choice }}</p>
+        </div>
+      </div>
+      <div v-else class="empty-choices">
+        <p>未获取到有效选项，请重试。</p>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
+/* Plot Choice Styles */
+.plot-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.choice-hint {
+  color: var(--text-color);
+  opacity: 0.8;
+  margin-bottom: 1rem;
+}
+
+.choice-card {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  padding: 1.5rem;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  gap: 1rem;
+  transition: all 0.2s;
+}
+
+.choice-card:hover {
+  background: var(--accent-glow);
+  border-color: var(--primary-color);
+  transform: translateX(5px);
+}
+
+.choice-index {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--primary-color);
+  opacity: 0.8;
+}
+
+.choice-text {
+  margin: 0;
+  color: var(--text-color);
+  line-height: 1.5;
+}
+
 .workbench-container {
   display: flex;
   height: 100%; /* Fill remaining height from main */
@@ -533,11 +814,35 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
   padding: 1rem;
 }
 
-.no-chapters {
+.no-chapters.no-assets {
     text-align: center;
     color: #888;
     margin-top: 2rem;
     font-size: 0.9rem;
+}
+
+.outline-content-wrapper {
+    padding: 1rem;
+    height: 100%;
+    overflow-y: auto;
+    color: var(--text-color);
+}
+
+.outline-text {
+    white-space: pre-wrap;
+    line-height: 1.6;
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--text-color);
+    opacity: 0.9;
+    padding: 0.5rem;
+}
+
+.hint-text {
+    text-align: center;
+    color: #64748b;
+    font-size: 0.85rem;
+    margin-top: -10px;
 }
 
 .chapter-item {
@@ -919,5 +1224,131 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
 
 .mr-1 {
   margin-right: 4px;
+}
+/* Gallery Styles */
+.gallery-container {
+    padding: 1rem;
+    height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.gallery-header {
+    margin-bottom: 1.5rem;
+    display: flex;
+    justify-content: center;
+}
+
+.gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 1.5rem;
+}
+
+.gallery-item {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: transform 0.2s;
+}
+
+.gallery-item:hover {
+    transform: translateY(-5px);
+}
+
+.gallery-img-wrapper {
+    width: 100%;
+    height: 150px;
+    background: #000;
+}
+
+.gallery-img-wrapper .el-image {
+    width: 100%;
+    height: 100%;
+}
+
+.gallery-info {
+    padding: 10px;
+}
+
+.gallery-prompt {
+    font-size: 0.8rem;
+    color: #e2e8f0;
+    margin-bottom: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gallery-segment {
+    font-size: 0.75rem;
+    color: #94a3b8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.image-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  background: var(--glass-bg);
+  color: #909399;
+  font-size: 30px;
+}
+
+.generate-btn {
+    width: 100%;
+}
+.ai-bubble-menu {
+  background: var(--glass-bg);
+  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  padding: 5px;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--card-hover-shadow);
+  display: flex;
+  gap: 5px;
+}
+</style>
+
+<style>
+/* Global overrides for Element Plus Dialog to match Theme */
+.custom-dialog {
+  background: var(--glass-bg) !important;
+  backdrop-filter: blur(24px) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--card-hover-shadow) !important;
+}
+
+.custom-dialog .el-dialog__header {
+  margin-right: 0;
+  border-bottom: 1px solid var(--glass-border);
+  padding-bottom: 20px;
+}
+
+.custom-dialog .el-dialog__title {
+  color: var(--text-color) !important;
+  font-weight: 600;
+}
+
+.custom-dialog .el-dialog__body {
+  color: var(--text-color) !important;
+  padding-top: 20px;
+}
+
+.custom-dialog .el-dialog__close {
+  color: var(--text-color) !important;
+  font-size: 1.2rem;
+  opacity: 0.7;
+}
+
+.custom-dialog .el-dialog__close:hover {
+  color: var(--primary-color) !important;
+  opacity: 1;
 }
 </style>

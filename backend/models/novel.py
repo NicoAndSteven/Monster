@@ -17,16 +17,32 @@ class NovelCreate(BaseModel):
     id: Union[str, int]
     title: str
     description: Optional[str] = None
+    type: Optional[str] = None # Genre/Type e.g. "Horror", "Comedy"
 
 class ChapterGenerate(BaseModel):
     chapter_num: int
     prompt: Optional[str] = None
     mode: GenerationMode = GenerationMode.API
-    context_window: int = 500  # Number of characters from previous chapter to include
-    include_assets: bool = True # Whether to inject character/scene assets
+    context_window: int = 1000 # Increased default context
+    include_assets: bool = True
+    plot_choice: Optional[str] = None # User selected plot direction
+
+class PlotChoiceRequest(BaseModel):
+    chapter_num: int
+    context_window: int = 1000
+
+class OutlineGenerate(BaseModel):
+    type: str
+
+class OutlineUpdate(BaseModel):
+    outline: str
 
 class ChapterUpdate(BaseModel):
-    content: str
+    content: Optional[str] = None
+    images: Optional[List[str]] = None
+
+class IllustrationGenerate(BaseModel):
+    chapter_num: int
 
 class Asset(BaseModel):
     id: Union[str, int]
@@ -37,6 +53,7 @@ class Asset(BaseModel):
     duration: Optional[str] = None
     date: Optional[str] = None
     img: Optional[str] = None
+    details: Optional[str] = None # Wiki/Encyclopedia content
 
 class PipelineStatus(BaseModel):
     status: str

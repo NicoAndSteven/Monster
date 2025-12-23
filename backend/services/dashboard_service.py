@@ -18,13 +18,30 @@ def get_dashboard_stats():
     # Track word count per novel
     # Structure: {novel_id: {"title": str, "words": int, "chapter_count": int}}
     novel_stats = {}
+    
+    # Asset stats
+    total_assets = 0
+    asset_types = {}
 
     for file_path in all_json_files:
         filename = os.path.basename(file_path)
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                
+            
+            # Check for asset file: novel_{id}_assets.json
+            if filename.endswith('_assets.json') and isinstance(data, list):
+                # It's an asset file
+                local_count = len(data)
+                total_assets += local_count
+                for asset in data:
+                    atype = asset.get('type', 'unknown')
+                    # Only count as "Scene Picture" or "Character Portrait" if it has an image
+                    # The Dashboard labels are "角色立绘" (Character Portrait) and "场景图" (Scene Picture)
+                    if asset.get('img'):
+                        asset_types[atype] = asset_types.get(atype, 0) + 1
+                continue
+
             if 'chapter_num' in data:
                 # It's a chapter
                 chapters.append(data)
@@ -90,6 +107,8 @@ def get_dashboard_stats():
         "total_novels": len(novels),
         "total_chapters": len(chapters),
         "total_words": total_words,
+        "total_assets": total_assets,
+        "asset_types": asset_types,
         "storage_usage": storage_usage,
         "recent_activity": recent_activity[-5:], # Last 5 items
         "details": {

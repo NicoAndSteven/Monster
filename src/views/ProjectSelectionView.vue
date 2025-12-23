@@ -16,13 +16,17 @@ const itemsPerPage = 3
 
 const createForm = reactive({
   title: '',
-  description: ''
+  description: '',
+  type: ''
 })
 
 const createRules = reactive<FormRules>({
   title: [
     { required: true, message: '请输入项目名称', trigger: 'blur' },
     { min: 1, max: 50, message: '长度 in 1 到 50 个字符', trigger: 'blur' }
+  ],
+  type: [
+    { required: true, message: '请输入小说类型', trigger: 'blur' }
   ],
   description: [
     { required: true, message: '请输入项目描述', trigger: 'blur' }
@@ -60,6 +64,7 @@ const handleSelectProject = (project: any) => {
 const openCreateDialog = () => {
   createForm.title = ''
   createForm.description = ''
+  createForm.type = ''
   createDialogVisible.value = true
 }
 
@@ -68,7 +73,7 @@ const handleCreateProject = async (formEl: FormInstance | undefined) => {
   await formEl.validate(async (valid) => {
     if (valid) {
       try {
-        await projectStore.createProject(createForm.title, createForm.description)
+        await projectStore.createProject(createForm.title, createForm.description, createForm.type)
         ElMessage.success('项目创建成功')
         createDialogVisible.value = false
         // Reset to last page to see new project if needed, or stay
@@ -234,6 +239,9 @@ const prevPage = () => {
       >
         <el-form-item label="项目名称" prop="title">
           <el-input v-model="createForm.title" placeholder="请输入项目名称" />
+        </el-form-item>
+        <el-form-item label="小说类型" prop="type">
+          <el-input v-model="createForm.type" placeholder="请输入小说类型，如：赛博朋克、古言、克苏鲁" />
         </el-form-item>
         <el-form-item label="项目描述" prop="description">
           <el-input

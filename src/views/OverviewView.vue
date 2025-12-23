@@ -1,6 +1,75 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { Monitor, TrendCharts, Money, User, Picture, Microphone } from '@element-plus/icons-vue'
+import { ref, onMounted, watch } from 'vue'
+import { Monitor, TrendCharts, Money, User, Picture, Microphone, Document, Edit, Check, Close, Refresh } from '@element-plus/icons-vue'
+import { useProjectStore } from '@/stores/projectStore'
+import { storeToRefs } from 'pinia'
+import { ElMessage } from 'element-plus'
+
+const projectStore = useProjectStore()
+const { currentProject } = storeToRefs(projectStore)
+
+const isEditingOutline = ref(false)
+const outlineText = ref('')
+const isGeneratingOutline = ref(false)
+
+// Sync outlineText with project
+watch(currentProject, (newVal) => {
+    if (newVal && newVal.outline) {
+        outlineText.value = newVal.outline
+    }
+}, { immediate: true })
+
+const startEditOutline = () => {
+    outlineText.value = currentProject.value?.outline || ''
+    isEditingOutline.value = true
+}
+
+const cancelEditOutline = () => {
+    outlineText.value = currentProject.value?.outline || ''
+    isEditingOutline.value = false
+}
+
+const saveOutline = async () => {
+    if (!currentProject.value) return
+    try {
+        const res = await fetch(`http://127.0.0.1:8000/api/novels/${currentProject.value.id}/outline`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outline: outlineText.value })
+        })
+        if (res.ok) {
+            ElMessage.success('大纲更新成功')
+            // Update store
+            if (currentProject.value) {
+                currentProject.value.outline = outlineText.value
+            }
+            isEditingOutline.value = false
+        } else {
+            ElMessage.error('更新失败')
+        }
+    } catch (e) {
+        ElMessage.error('网络错误')
+    }
+}
+
+const regenerateOutline = async () => {
+    if (!currentProject.value) return
+    isGeneratingOutline.value = true
+    try {
+        const res = await fetch(`http://127.0.0.1:8000/api/novels/${currentProject.value.id}/outline/generate`, {
+            method: 'POST'
+        })
+        if (res.ok) {
+            ElMessage.success('大纲生成任务已提交，请稍候...')
+        } else {
+            ElMessage.error('请求失败')
+        }
+    } catch (e) {
+        ElMessage.error('网络错误')
+    } finally {
+        isGeneratingOutline.value = false
+    }
+}
 
 interface Analytics {
   assets_count: {
@@ -33,29 +102,26 @@ const fetchStats = async () => {
     const res = await fetch('http://127.0.0.1:8000/api/dashboard/stats')
     if (res.ok) {
       const data = await res.json()
+      
       if (data.analytics) {
-        analytics.value = data.analytics
+        // If backend sends pre-formatted analytics (not currently implemented in backend shown above, but good for future proofing)
+        analytics.value = { ...analytics.value, ...data.analytics }
+      }
+
+      // Map backend response to frontend format (Source of Truth for assets)
+      if (data.asset_types) {
+         analytics.value.assets_count = {
+            characters: data.asset_types['character'] || 0,
+            scenes: data.asset_types['scene'] || 0,
+            audio_files: data.asset_types['audio'] || 0
+         }
       }
     } else {
-       // Fallback mock data if API fails or is not updated yet
-       analytics.value.assets_count = { characters: 15, scenes: 64, audio_files: 128 }
-       analytics.value.pipeline = { 
-         status: 'processing', 
-         current_stage: 'image_gen', 
-         progress: 45, 
-         task_name: '生成赛博朋克主角立绘' 
-       }
+       // Fallback mock data
+       // analytics.value.assets_count = { characters: 15, scenes: 64, audio_files: 128 }
     }
   } catch (e) {
     console.error("Failed to fetch stats", e)
-    // Fallback mock data
-    analytics.value.assets_count = { characters: 15, scenes: 64, audio_files: 128 }
-    analytics.value.pipeline = { 
-      status: 'processing', 
-      current_stage: 'image_gen', 
-      progress: 45, 
-      task_name: '生成赛博朋克主角立绘' 
-    }
   } finally {
     loading.value = false
   }
@@ -88,6 +154,42 @@ onMounted(() => {
 <template>
   <div class="dashboard-view animate__animated animate__fadeIn">
     
+    <!-- 0. Project Outline -->
+    <div class="section-card glass-panel mb-4" v-if="currentProject">
+      <div class="section-header">
+        <h3><el-icon><Document /></el-icon> 剧情大纲</h3>
+        <div class="header-actions">
+            <el-button v-if="!isEditingOutline" type="primary" link @click="startEditOutline">
+                <el-icon><Edit /></el-icon> 编辑
+            </el-button>
+            <template v-else>
+                <el-button type="success" link @click="saveOutline">
+                    <el-icon><Check /></el-icon> 保存
+                </el-button>
+                <el-button type="info" link @click="cancelEditOutline">
+                    <el-icon><Close /></el-icon> 取消
+                </el-button>
+            </template>
+            <el-button type="warning" link @click="regenerateOutline" :loading="isGeneratingOutline">
+                <el-icon><Refresh /></el-icon> 重新生成
+            </el-button>
+        </div>
+      </div>
+      
+      <div class="outline-content">
+        <el-input
+            v-if="isEditingOutline"
+            v-model="outlineText"
+            type="textarea"
+            :rows="10"
+            placeholder="在此编辑大纲..."
+        />
+        <div v-else class="markdown-body" style="white-space: pre-wrap; line-height: 1.6;">
+            {{ currentProject.outline || '暂无大纲，请点击重新生成。' }}
+        </div>
+      </div>
+    </div>
+
     <!-- 1. Custom Pipeline Monitor -->
     <div class="section-card glass-panel mb-4">
       <div class="section-header">
@@ -448,6 +550,20 @@ onMounted(() => {
   opacity: 1;
   filter: brightness(1.2);
 }
+
+.header-actions {
+    display: flex;
+    gap: 1rem;
+}
+
+.outline-content {
+    padding: 1rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    margin-top: 1rem;
+    color: #e2e8f0;
+}
+
 
 .bar.douyin {
   background: #ff0050; 
