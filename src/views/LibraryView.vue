@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, reactive, watch, nextTick, onUnmounted } from 'vue'
-import { Search, User, PictureFilled, Headset, VideoCamera, Plus, MagicStick, Reading, Connection } from '@element-plus/icons-vue'
+import { Search, User, PictureFilled, Headset, VideoCamera, Plus, MagicStick, Reading, Connection, Edit, Delete, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { useProjectStore } from '@/stores/projectStore'
 import { marked } from 'marked'
@@ -402,7 +402,7 @@ const previewMedia = (item: any) => {
       </div>
     </div>
 
-    <div class="library-container glass-effect">
+    <div class="library-container glass-panel">
       <el-tabs v-model="activeTab" class="custom-tabs">
         
         <!-- Tab 1: Knowledge Base -->
@@ -412,36 +412,41 @@ const previewMedia = (item: any) => {
           </template>
           
           <div class="card-grid">
+            <!-- Add New Card (First) -->
+            <div class="asset-card add-card" @click="openCreateDialog">
+              <div class="add-content">
+                <div class="icon-wrapper">
+                  <el-icon class="plus-icon"><Plus /></el-icon>
+                </div>
+                <span>新建角色</span>
+              </div>
+            </div>
+
             <div class="asset-card" v-for="char in filteredCharacters" :key="char.id">
               <div class="card-image">
                 <img :src="char.img" :alt="char.name" />
+                <div class="card-badges">
+                  <span class="role-badge">{{ char.role }}</span>
+                </div>
                 <div class="hover-overlay">
-                  <el-button size="small" type="primary" :icon="Reading" @click="openWiki(char)">百科</el-button>
-                  <el-button size="small" @click="editCharacter(char)">编辑</el-button>
-                  <el-button size="small" type="danger" @click="deleteAsset(char.id)">删除</el-button>
+                  <el-button circle type="primary" :icon="Reading" @click="openWiki(char)" title="百科" />
+                  <el-button circle :icon="Edit" @click="editCharacter(char)" title="编辑" />
+                  <el-button circle type="danger" :icon="Delete" @click="deleteAsset(char.id)" title="删除" />
                   <el-button 
-                    size="small" 
+                    circle 
                     type="warning" 
+                    :icon="Refresh"
                     :loading="refreshingAsset === char.id"
                     @click="handleRefreshAsset(char)"
-                  >
-                    更新
-                  </el-button>
+                    title="更新"
+                  />
                 </div>
               </div>
               <div class="card-info">
                 <h4>{{ char.name }}</h4>
-                <p class="role">{{ char.role }}</p>
                 <div class="tags">
                   <span v-for="tag in char.tags" :key="tag" class="tag">{{ tag }}</span>
                 </div>
-              </div>
-            </div>
-            <!-- Add New Card -->
-            <div class="asset-card add-card" @click="openCreateDialog">
-              <div class="add-content">
-                <el-icon class="plus-icon"><Plus /></el-icon>
-                <span>新建角色</span>
               </div>
             </div>
           </div>
@@ -562,19 +567,20 @@ const previewMedia = (item: any) => {
 
 <style scoped>
 .library-view {
-  padding: 1rem 2rem;
+  padding: 2rem 3rem;
   color: var(--text-color);
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .header-actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 2rem;
   flex-shrink: 0;
 }
 
@@ -586,15 +592,11 @@ const previewMedia = (item: any) => {
   background: var(--glass-bg);
   box-shadow: none;
   border: 1px solid var(--glass-border);
+  border-radius: 20px;
 }
 
 :deep(.search-input .el-input__inner) {
   color: var(--text-color);
-}
-
-:deep(.search-input .el-input__inner::placeholder) {
-  color: var(--text-color);
-  opacity: 0.6;
 }
 
 .library-container {
@@ -602,15 +604,17 @@ const previewMedia = (item: any) => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0; /* Remove padding here, move to grid or handle inside */
+  padding: 0;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.glass-effect {
-  /* Use CSS variables for theme adaptation */
+.glass-panel {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .custom-tabs {
@@ -619,154 +623,124 @@ const previewMedia = (item: any) => {
   flex-direction: column;
 }
 
+:deep(.el-tabs__header) {
+  margin: 0;
+  padding: 0 1.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+:deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background-color: transparent;
+}
+
+:deep(.el-tabs__item) {
+  color: #888;
+  font-size: 1rem;
+  padding: 1.2rem 1rem;
+  height: auto;
+  transition: all 0.3s;
+}
+
+:deep(.el-tabs__item.is-active) {
+  color: var(--primary-color);
+  font-weight: 600;
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
+:deep(.el-tabs__active-bar) {
+  background-color: var(--primary-color);
+  height: 3px;
+  border-radius: 3px;
+  box-shadow: 0 0 10px var(--primary-color);
+}
+
 :deep(.el-tabs__content) {
   flex: 1;
   overflow: hidden;
-  padding: 1.5rem; /* Add padding here for content */
-}
-
-/* Graph Styles */
-.graph-wrapper {
-    width: 100%;
-    height: 100%;
-    position: relative;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-}
-.chart-container {
-    width: 100%;
-    height: 600px; /* Fixed height or flex */
-    min-height: 500px;
-}
-.graph-controls {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-}
-
-/* Wiki Dialog Styles */
-.wiki-container {
-    color: var(--text-color);
-}
-.wiki-header {
-    display: flex;
-    gap: 20px;
-    align-items: flex-start;
-    margin-bottom: 20px;
-}
-.wiki-avatar {
-    width: 100px;
-    height: 100px;
-    border-radius: 8px;
-    object-fit: cover;
-    border: 2px solid var(--primary-color);
-}
-.wiki-basic-info {
-    flex: 1;
-}
-.wiki-basic-info h3 {
-    margin: 0 0 5px 0;
-    font-size: 1.5rem;
-}
-.role-tag {
-    color: var(--primary-color);
-    font-weight: bold;
-    margin-bottom: 10px;
-}
-.wiki-content {
-    line-height: 1.8;
-    max-height: 500px;
-    overflow-y: auto;
-    padding-right: 10px;
-}
-/* Basic Markdown Styles for Wiki */
-.markdown-body h1, .markdown-body h2, .markdown-body h3 {
-    margin-top: 1em;
-    margin-bottom: 0.5em;
-    color: var(--primary-color);
-}
-.markdown-body ul {
-    padding-left: 20px;
-}
-.markdown-body strong {
-    color: var(--text-color);
-    font-weight: 700;
+  padding: 0;
 }
 
 :deep(.el-tab-pane) {
   height: 100%;
-  overflow-y: auto; /* Allow scrolling inside tabs */
-  padding-right: 0.5rem; /* Space for scrollbar */
+  overflow-y: auto;
+  padding: 2rem;
+  box-sizing: border-box;
 }
 
-/* Custom Scrollbar for tab pane */
+/* Scrollbar */
 :deep(.el-tab-pane)::-webkit-scrollbar {
   width: 6px;
 }
 :deep(.el-tab-pane)::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 3px;
 }
 :deep(.el-tab-pane)::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.tab-label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 1rem;
-}
-
-/* Custom Tabs */
-:deep(.el-tabs__item) {
-  color: var(--text-color);
-  opacity: 0.7;
-}
-:deep(.el-tabs__item.is-active) {
-  color: var(--primary-color);
-  opacity: 1;
-}
-:deep(.el-tabs__active-bar) {
-  background-color: var(--primary-color);
-}
-:deep(.el-tabs__nav-wrap::after) {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
 /* Card Grid */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 1.5rem;
-  padding: 1rem 0;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 2rem;
+  padding-bottom: 2rem;
 }
 
 .asset-card {
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
   overflow: hidden;
-  transition: transform 0.3s;
-  border: 1px solid transparent;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .asset-card:hover {
-  transform: translateY(-5px);
+  transform: translateY(-8px);
+  background: rgba(255, 255, 255, 0.06);
   border-color: var(--primary-color);
-  box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
 .card-image {
-  height: 200px;
+  height: 280px;
   position: relative;
+  overflow: hidden;
 }
 
 .card-image img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.5s;
+}
+
+.asset-card:hover .card-image img {
+  transform: scale(1.05);
+}
+
+.card-badges {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  gap: 5px;
+  z-index: 2;
+}
+
+.role-badge {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .hover-overlay {
@@ -775,32 +749,39 @@ const previewMedia = (item: any) => {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(2px);
   display: flex;
   justify-content: center;
   align-items: center;
+  gap: 10px;
   opacity: 0;
-  transition: opacity 0.3s;
+  transition: all 0.3s;
+  transform: translateY(10px);
 }
 
-.card-image:hover .hover-overlay {
+.asset-card:hover .hover-overlay {
   opacity: 1;
+  transform: translateY(0);
 }
 
 .card-info {
-  padding: 1rem;
+  padding: 1.2rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: linear-gradient(to top, rgba(0,0,0,0.4), transparent);
 }
 
 .card-info h4 {
-  margin: 0;
-  color: var(--text-color);
+  margin: 0 0 0.8rem 0;
+  color: #fff;
   font-size: 1.1rem;
-}
-
-.role {
-  color: var(--primary-color);
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tags {
@@ -811,72 +792,108 @@ const previewMedia = (item: any) => {
 
 .tag {
   background: rgba(255, 255, 255, 0.1);
-  padding: 0.2rem 0.5rem;
+  padding: 2px 8px;
   border-radius: 4px;
-  font-size: 0.8rem;
-  color: var(--text-color);
-  opacity: 0.8;
+  font-size: 0.75rem;
+  color: #bbb;
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* Add Card Style */
 .add-card {
-  border: 1px dashed rgba(255, 255, 255, 0.3);
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  background: transparent;
+  cursor: pointer;
+  min-height: 380px; /* Match typical card height */
   display: flex;
   justify-content: center;
   align-items: center;
-  cursor: pointer;
-  min-height: 300px;
 }
 
 .add-card:hover {
   border-color: var(--primary-color);
-  background: var(--accent-glow);
+  background: rgba(212, 175, 55, 0.05);
+  transform: translateY(-5px);
 }
 
 .add-content {
-  text-align: center;
-  color: var(--text-color);
-  opacity: 0.6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  color: #888;
+  transition: color 0.3s;
 }
 
-.plus {
-  display: block;
-  font-size: 3rem;
-  margin-bottom: 0.5rem;
+.icon-wrapper {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 2rem;
+  transition: all 0.3s;
 }
 
-/* Multimedia List */
+.add-card:hover .icon-wrapper {
+  background: var(--primary-color);
+  color: #000;
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.add-card:hover .add-content {
+  color: var(--primary-color);
+}
+
+/* Graph Styles */
+.graph-wrapper {
+  width: 100%;
+  height: 100%;
+  min-height: 600px;
+}
+
+/* Multimedia Styles */
 .waterfall-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
 }
 
 .media-item {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 1.2rem;
   display: flex;
   align-items: center;
-  padding: 1rem;
-  background: rgba(0, 0, 0, 0.2) !important; /* Override glass-effect slightly */
-  border: 1px solid transparent;
-  border-radius: 8px;
+  gap: 1rem;
   transition: all 0.3s;
 }
 
 .media-item:hover {
+  background: rgba(255, 255, 255, 0.08);
   border-color: var(--primary-color);
-  background: rgba(0, 0, 0, 0.3) !important;
+  transform: translateX(5px);
 }
 
 .media-icon {
-  width: 50px;
-  height: 50px;
-  background: var(--accent-glow);
-  color: var(--primary-color);
-  border-radius: 8px;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #888;
   display: flex;
   justify-content: center;
   align-items: center;
   font-size: 1.5rem;
-  margin-right: 1rem;
+  transition: all 0.3s;
+}
+
+.media-item:hover .media-icon {
+  background: var(--primary-color);
+  color: #000;
 }
 
 .media-info {
@@ -884,18 +901,29 @@ const previewMedia = (item: any) => {
 }
 
 .media-info h5 {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-color);
+  margin: 0 0 0.3rem 0;
+  font-size: 1rem;
+  color: #fff;
 }
 
 .media-info p {
   margin: 0;
   font-size: 0.8rem;
-  color: #888;
+  color: #666;
 }
 
-.media-actions {
-  display: flex;
-  gap: 0.5rem;
+/* Dialog Tweaks */
+:deep(.el-dialog) {
+  background: #1e293b; /* Dark bg fallback */
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+}
+
+:deep(.el-dialog__title) {
+  color: #fff;
+}
+
+:deep(.el-dialog__body) {
+  padding: 20px 30px;
 }
 </style>

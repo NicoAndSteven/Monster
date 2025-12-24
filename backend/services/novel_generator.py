@@ -136,7 +136,7 @@ def _generate_via_api(prompt: str, context: str = "") -> str:
     except Exception as e:
         return f"[Error] Exception during generation: {str(e)}"
 
-def generate_outline(novel_type: str) -> str:
+def generate_outline(novel_type: str, title: str = "", description: str = "") -> str:
     """
     Generate a novel outline based on type/genre.
     """
@@ -144,7 +144,7 @@ def generate_outline(novel_type: str) -> str:
     if not api_key:
         return "API Key not configured."
 
-    system_prompt = """你是一个专业的小说大纲策划师。请根据用户提供的小说类型，创作一份详细的小说大纲。
+    system_prompt = """你是一个专业的小说大纲策划师。请根据用户提供的小说类型、标题和描述，创作一份详细的小说大纲。
 大纲应包含：
 1. **故事背景**：世界观、时代背景。
 2. **核心冲突**：主要矛盾点。
@@ -152,9 +152,15 @@ def generate_outline(novel_type: str) -> str:
 4. **剧情走向**：起承转合的粗略规划（分章节或阶段）。
 请使用 Markdown 格式清晰输出。"""
 
+    user_content = f"请为一部【{novel_type}】类型的小说生成一份详细大纲。"
+    if title:
+        user_content += f"\n小说标题：{title}"
+    if description:
+        user_content += f"\n小说描述/梗概：{description}"
+
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"请为一部【{novel_type}】类型的小说生成一份详细大纲。"}
+        {"role": "user", "content": user_content}
     ]
 
     try:

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Body, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,7 +8,9 @@ from .config import settings
 from .models.novel import NovelCreate, ChapterGenerate, Asset, PipelineStatus, ChapterUpdate, PlotChoiceRequest, OutlineUpdate, OutlineGenerate
 from .utils import storage
 from .services import novel_generator, dashboard_service, export_service
-from .services.rpa_doubao import doubao_rpa
+from .services.z_image_generator import z_image_generator
+from .utils.task_manager import task_manager
+from fastapi.concurrency import run_in_threadpool
 import os
 import json
 from docx import Document
@@ -88,18 +90,118 @@ async def clean_system_cache():
     storage.clear_cache()
     return {"status": "success", "message": "Cache cleaned"}
 
+# --- Task Management ---
+@app.get("/api/tasks")
+async def get_active_tasks():
+    return task_manager.get_active_tasks()
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
 # --- Background Tasks ---
-def generate_and_save_outline(novel_id: str, novel_type: str):
+def generate_and_save_outline(task_id: str, novel_id: str, novel_type: str, title: str = "", description: str = ""):
     try:
-        outline = novel_generator.generate_outline(novel_type)
+        # Stage 0: Initializing
+        task_manager.update_task(task_id, status="processing", progress=10, step="Initializing outline generation...", current_stage_index=0)
+        
+        # Stage 1: AI Brainstorming
+        # Simulate thinking
+        task_manager.update_task(task_id, progress=30, step="AI is brainstorming plot points...", current_stage_index=1)
+        
+        # Stage 2: Generating
+        task_manager.update_task(task_id, progress=50, step="AI is generating the outline...", current_stage_index=2)
+        outline = novel_generator.generate_outline(novel_type, title, description)
+        
+        # Stage 3: Saving
+        task_manager.update_task(task_id, progress=80, step="Formatting and saving...", current_stage_index=3)
+        
         # Load existing to ensure we don't overwrite updates (though rare this early)
         novel_data = storage.load_json(f"novel_{novel_id}.json")
         if novel_data:
             novel_data['outline'] = outline
             storage.save_json(f"novel_{novel_id}.json", novel_data)
             print(f"Outline generated for novel {novel_id}")
+            
+        task_manager.update_task(task_id, status="completed", progress=100, step="Outline generated successfully", current_stage_index=4, result={"outline_length": len(outline)})
     except Exception as e:
         print(f"Failed to generate outline for {novel_id}: {e}")
+        task_manager.update_task(task_id, status="failed", step=f"Error: {str(e)}")
+
+def run_chapter_generation(task_id: str, novel_id: str, chapter: ChapterGenerate):
+    try:
+        # Stage 0: Loading Resources
+        task_manager.update_task(task_id, status="processing", progress=5, step="Loading context and assets...", current_stage_index=0)
+        
+        # Check if novel exists
+        novel_data = storage.load_json(f"novel_{novel_id}.json")
+        if not novel_data:
+            raise Exception("Novel not found")
+        
+        # 1. Build Context: Assets
+        context_parts = []
+        
+        # Add Outline to context
+        if novel_data.get("outline"):
+            context_parts.append(f"【小说大纲】\n{novel_data.get('outline')}")
+
+        if chapter.include_assets:
+            assets = storage.load_json(f"novel_{novel_id}_assets.json")
+            if assets:
+                relevant_assets = [
+                    f"{a.get('type').upper()}: {a.get('name')} - {a.get('role') or 'No description'}"
+                    for a in assets if a.get('type') in ['character', 'scene']
+                ]
+                if relevant_assets:
+                    context_parts.append("【相关设定】\n" + "\n".join(relevant_assets))
+        
+        # Stage 1: Analyzing Context
+        task_manager.update_task(task_id, progress=20, step="Analyzing previous chapter...", current_stage_index=1)
+
+        # 2. Build Context: Previous Chapter
+        if chapter.chapter_num > 1:
+            prev_chapter_num = chapter.chapter_num - 1
+            prev_chapter = storage.load_json(f"novel_{novel_id}_chapter_{prev_chapter_num}.json")
+            if prev_chapter and prev_chapter.get("content"):
+                content_preview = prev_chapter.get("content")[-chapter.context_window:]
+                context_parts.append(f"【前情提要（上一章结尾）】\n...{content_preview}")
+        
+        # Add Plot Choice
+        if chapter.plot_choice:
+            context_parts.append(f"【用户选择的剧情走向】\n{chapter.plot_choice}")
+                
+        full_context = "\n\n".join(context_parts)
+        
+        # Stage 2: AI Writing
+        task_manager.update_task(task_id, progress=40, step="AI is writing the chapter... (This may take 30-60s)", current_stage_index=2)
+        
+        # Generate content
+        content = novel_generator.generate_chapter_text(
+            chapter.prompt or f"Chapter {chapter.chapter_num}",
+            mode=chapter.mode,
+            context=full_context
+        )
+        
+        # Stage 3: Saving
+        task_manager.update_task(task_id, progress=90, step="Saving chapter...", current_stage_index=3)
+        
+        # Save chapter
+        chapter_data = {
+            "novel_id": novel_id,
+            "chapter_num": chapter.chapter_num,
+            "content": content,
+            "mode": chapter.mode
+        }
+        storage.save_json(f"novel_{novel_id}_chapter_{chapter.chapter_num}.json", chapter_data)
+        
+        task_manager.update_task(task_id, status="completed", progress=100, step="Chapter generated successfully", current_stage_index=4, result=chapter_data)
+        
+    except Exception as e:
+        print(f"Chapter generation failed: {e}")
+        task_manager.update_task(task_id, status="failed", step=f"Error: {str(e)}")
 
 # --- Novels ---
 
@@ -114,10 +216,12 @@ async def create_novel(novel: NovelCreate, background_tasks: BackgroundTasks):
     storage.save_json(f"novel_{novel.id}.json", novel_dict)
     
     # Schedule Outline Generation if type is provided
+    task_id = None
     if novel.type:
-        background_tasks.add_task(generate_and_save_outline, novel.id, novel.type)
+        task_id = task_manager.create_task("outline_generation", f"Generating Outline for {novel.title}")
+        background_tasks.add_task(generate_and_save_outline, task_id, novel.id, novel.type, novel.title, novel.description)
         
-    return {"status": "success", "novel": novel_dict}
+    return {"status": "success", "novel": novel_dict, "task_id": task_id}
 
 @app.put("/api/novels/{id}/outline")
 async def update_outline(id: str, update: OutlineUpdate):
@@ -136,8 +240,10 @@ async def regenerate_outline(id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Novel not found")
     
     novel_type = novel_data.get("type", "General")
-    background_tasks.add_task(generate_and_save_outline, id, novel_type)
-    return {"status": "success", "message": "Outline generation started"}
+    stages = ["初始化", "AI构思", "生成大纲", "保存结果"]
+    task_id = task_manager.create_task("outline_generation", f"Regenerating Outline for {novel_data.get('title')}", stages=stages)
+    background_tasks.add_task(generate_and_save_outline, task_id, id, novel_type, novel_data.get('title'), novel_data.get('description'))
+    return {"status": "success", "message": "Outline generation started", "task_id": task_id}
 
 @app.get("/api/novels/{id}/relationships")
 async def get_relationships(id: str):
@@ -313,62 +419,16 @@ async def delete_chapter(id: str, chapter_num: int):
     return {"status": "success", "message": "Chapter deleted"}
 
 @app.post("/api/novels/{id}/generate")
-async def generate_chapter(id: str, chapter: ChapterGenerate):
+async def generate_chapter(id: str, chapter: ChapterGenerate, background_tasks: BackgroundTasks):
     # Check if novel exists
-    novel_data = storage.load_json(f"novel_{id}.json")
-    if not novel_data:
+    if not storage.load_json(f"novel_{id}.json"):
         raise HTTPException(status_code=404, detail="Novel not found")
     
-    # 1. Build Context: Assets
-    context_parts = []
+    stages = ["加载资源", "分析上下文", "AI写作", "保存章节"]
+    task_id = task_manager.create_task("chapter_generation", f"Generating Chapter {chapter.chapter_num}", stages=stages)
+    background_tasks.add_task(run_chapter_generation, task_id, id, chapter)
     
-    # Add Outline to context
-    if novel_data.get("outline"):
-        context_parts.append(f"【小说大纲】\n{novel_data.get('outline')}")
-
-    if chapter.include_assets:
-        assets = storage.load_json(f"novel_{id}_assets.json")
-        if assets:
-            # Filter assets? For now, include all characters and scenes
-            # Or maybe just names and roles to save tokens
-            relevant_assets = [
-                f"{a.get('type').upper()}: {a.get('name')} - {a.get('role') or 'No description'}"
-                for a in assets if a.get('type') in ['character', 'scene']
-            ]
-            if relevant_assets:
-                context_parts.append("【相关设定】\n" + "\n".join(relevant_assets))
-    
-    # 2. Build Context: Previous Chapter
-    if chapter.chapter_num > 1:
-        prev_chapter_num = chapter.chapter_num - 1
-        prev_chapter = storage.load_json(f"novel_{id}_chapter_{prev_chapter_num}.json")
-        if prev_chapter and prev_chapter.get("content"):
-            content_preview = prev_chapter.get("content")[-chapter.context_window:]
-            context_parts.append(f"【前情提要（上一章结尾）】\n...{content_preview}")
-    
-    # Add Plot Choice
-    if chapter.plot_choice:
-        context_parts.append(f"【用户选择的剧情走向】\n{chapter.plot_choice}")
-            
-    full_context = "\n\n".join(context_parts)
-    
-    # Generate content
-    content = novel_generator.generate_chapter_text(
-        chapter.prompt or f"Chapter {chapter.chapter_num}",
-        mode=chapter.mode,
-        context=full_context
-    )
-    
-    # Save chapter
-    chapter_data = {
-        "novel_id": id,
-        "chapter_num": chapter.chapter_num,
-        "content": content,
-        "mode": chapter.mode
-    }
-    storage.save_json(f"novel_{id}_chapter_{chapter.chapter_num}.json", chapter_data)
-    
-    return {"status": "success", "chapter": chapter_data}
+    return {"status": "success", "message": "Chapter generation started", "task_id": task_id}
 
 @app.post("/api/novels/{id}/plot-choices")
 async def get_plot_choices(id: str, request: PlotChoiceRequest):
@@ -606,11 +666,18 @@ async def delete_asset(novel_id: str, asset_id: str):
     storage.save_json(filename, assets)
     return {"status": "success", "message": "Asset deleted"}
 
-@app.post("/api/generate/image/rpa")
-async def generate_image_rpa(request: ImageGenRequest):
-    result = await doubao_rpa.generate_image(request.prompt)
+@app.post("/api/generate/image")
+async def generate_image(request: Request, body: ImageGenRequest):
+    # Use Z-Image-Turbo via threadpool (since it's blocking)
+    result = await run_in_threadpool(z_image_generator.generate_image, body.prompt)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
+    
+    # Prepend base URL to image_url if it's relative
+    if "image_url" in result and result["image_url"].startswith("/"):
+        base_url = str(request.base_url).rstrip("/")
+        result["image_url"] = f"{base_url}{result['image_url']}"
+        
     return result
 
 @app.get("/api/media/{chapter_id}/video")

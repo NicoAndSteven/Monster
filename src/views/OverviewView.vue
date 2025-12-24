@@ -1,75 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
-import { Monitor, TrendCharts, Money, User, Picture, Microphone, Document, Edit, Check, Close, Refresh } from '@element-plus/icons-vue'
-import { useProjectStore } from '@/stores/projectStore'
-import { storeToRefs } from 'pinia'
-import { ElMessage } from 'element-plus'
-
-const projectStore = useProjectStore()
-const { currentProject } = storeToRefs(projectStore)
-
-const isEditingOutline = ref(false)
-const outlineText = ref('')
-const isGeneratingOutline = ref(false)
-
-// Sync outlineText with project
-watch(currentProject, (newVal) => {
-    if (newVal && newVal.outline) {
-        outlineText.value = newVal.outline
-    }
-}, { immediate: true })
-
-const startEditOutline = () => {
-    outlineText.value = currentProject.value?.outline || ''
-    isEditingOutline.value = true
-}
-
-const cancelEditOutline = () => {
-    outlineText.value = currentProject.value?.outline || ''
-    isEditingOutline.value = false
-}
-
-const saveOutline = async () => {
-    if (!currentProject.value) return
-    try {
-        const res = await fetch(`http://127.0.0.1:8000/api/novels/${currentProject.value.id}/outline`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ outline: outlineText.value })
-        })
-        if (res.ok) {
-            ElMessage.success('大纲更新成功')
-            // Update store
-            if (currentProject.value) {
-                currentProject.value.outline = outlineText.value
-            }
-            isEditingOutline.value = false
-        } else {
-            ElMessage.error('更新失败')
-        }
-    } catch (e) {
-        ElMessage.error('网络错误')
-    }
-}
-
-const regenerateOutline = async () => {
-    if (!currentProject.value) return
-    isGeneratingOutline.value = true
-    try {
-        const res = await fetch(`http://127.0.0.1:8000/api/novels/${currentProject.value.id}/outline/generate`, {
-            method: 'POST'
-        })
-        if (res.ok) {
-            ElMessage.success('大纲生成任务已提交，请稍候...')
-        } else {
-            ElMessage.error('请求失败')
-        }
-    } catch (e) {
-        ElMessage.error('网络错误')
-    } finally {
-        isGeneratingOutline.value = false
-    }
-}
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { Monitor, TrendCharts, Money, User, Picture, Microphone, Loading } from '@element-plus/icons-vue'
 
 interface Analytics {
   assets_count: {
@@ -81,21 +12,16 @@ interface Analytics {
     douyin: number[]
     xiaohongshu: number[]
   }
-  pipeline: {
-    status: string
-    current_stage: string
-    progress: number
-    task_name: string
-  }
 }
 
 const analytics = ref<Analytics>({
   assets_count: { characters: 12, scenes: 45, audio_files: 88 },
-  distribution: { douyin: [], xiaohongshu: [] },
-  pipeline: { status: 'idle', current_stage: 'idle', progress: 0, task_name: '' }
+  distribution: { douyin: [], xiaohongshu: [] }
 })
 
 const loading = ref(true)
+const activeTasks = ref<any[]>([])
+let pollTimer: any = null
 
 const fetchStats = async () => {
   try {
@@ -104,11 +30,9 @@ const fetchStats = async () => {
       const data = await res.json()
       
       if (data.analytics) {
-        // If backend sends pre-formatted analytics (not currently implemented in backend shown above, but good for future proofing)
         analytics.value = { ...analytics.value, ...data.analytics }
       }
 
-      // Map backend response to frontend format (Source of Truth for assets)
       if (data.asset_types) {
          analytics.value.assets_count = {
             characters: data.asset_types['character'] || 0,
@@ -116,9 +40,6 @@ const fetchStats = async () => {
             audio_files: data.asset_types['audio'] || 0
          }
       }
-    } else {
-       // Fallback mock data
-       // analytics.value.assets_count = { characters: 15, scenes: 64, audio_files: 128 }
     }
   } catch (e) {
     console.error("Failed to fetch stats", e)
@@ -127,91 +48,86 @@ const fetchStats = async () => {
   }
 }
 
-// Pipeline Logic
-const steps = [
-  { id: 'text_gen', label: '文本生成', icon: '📝' },
-  { id: 'image_gen', label: '绘图', icon: '🎨' },
-  { id: 'audio_gen', label: '语音合成', icon: '🎤' },
-  { id: 'video_gen', label: '视频合成', icon: '🎬' },
-  { id: 'publish', label: '发布', icon: '🚀' }
-]
-
-const getStepClass = (stepId: string) => {
-  const stageIndex = steps.findIndex(s => s.id === stepId)
-  const currentIndex = steps.findIndex(s => s.id === analytics.value.pipeline.current_stage)
-  
-  if (analytics.value.pipeline.status === 'idle') return 'pending'
-  if (stageIndex < currentIndex) return 'completed'
-  if (stageIndex === currentIndex) return 'active'
-  return 'pending'
+const fetchTasks = async () => {
+    try {
+        const res = await fetch('http://127.0.0.1:8000/api/tasks')
+        if (res.ok) {
+            activeTasks.value = await res.json()
+        }
+    } catch (e) {
+        console.error(e)
+    }
 }
 
 onMounted(() => {
   fetchStats()
+  fetchTasks()
+  pollTimer = setInterval(fetchTasks, 2000)
+})
+
+onBeforeUnmount(() => {
+    if (pollTimer) clearInterval(pollTimer)
 })
 </script>
 
 <template>
   <div class="dashboard-view animate__animated animate__fadeIn">
     
-    <!-- 0. Project Outline -->
-    <div class="section-card glass-panel mb-4" v-if="currentProject">
-      <div class="section-header">
-        <h3><el-icon><Document /></el-icon> 剧情大纲</h3>
-        <div class="header-actions">
-            <el-button v-if="!isEditingOutline" type="primary" link @click="startEditOutline">
-                <el-icon><Edit /></el-icon> 编辑
-            </el-button>
-            <template v-else>
-                <el-button type="success" link @click="saveOutline">
-                    <el-icon><Check /></el-icon> 保存
-                </el-button>
-                <el-button type="info" link @click="cancelEditOutline">
-                    <el-icon><Close /></el-icon> 取消
-                </el-button>
-            </template>
-            <el-button type="warning" link @click="regenerateOutline" :loading="isGeneratingOutline">
-                <el-icon><Refresh /></el-icon> 重新生成
-            </el-button>
-        </div>
-      </div>
-      
-      <div class="outline-content">
-        <el-input
-            v-if="isEditingOutline"
-            v-model="outlineText"
-            type="textarea"
-            :rows="10"
-            placeholder="在此编辑大纲..."
-        />
-        <div v-else class="markdown-body" style="white-space: pre-wrap; line-height: 1.6;">
-            {{ currentProject.outline || '暂无大纲，请点击重新生成。' }}
-        </div>
-      </div>
-    </div>
-
-    <!-- 1. Custom Pipeline Monitor -->
+    <!-- 1. Real-time Task Center -->
     <div class="section-card glass-panel mb-4">
       <div class="section-header">
-        <h3><el-icon><Monitor /></el-icon> 任务流水线监控</h3>
-        <span class="status-tag" :class="analytics.pipeline.status">
-          {{ analytics.pipeline.status === 'processing' ? '运行中' : '系统空闲' }}
+        <h3><el-icon><Monitor /></el-icon> 实时任务中心</h3>
+        <span class="status-tag" :class="activeTasks.length > 0 ? 'processing' : ''">
+          {{ activeTasks.length > 0 ? `${activeTasks.length} 个任务运行中` : '系统空闲' }}
         </span>
       </div>
       
-      <div class="custom-pipeline">
-        <div 
-          v-for="(step, index) in steps" 
-          :key="step.id" 
-          class="pipeline-step"
-          :class="getStepClass(step.id)"
-        >
-          <div class="step-icon">
-            <span class="icon-emoji">{{ step.icon }}</span>
-            <div class="spinner-ring" v-if="getStepClass(step.id) === 'active'"></div>
-          </div>
-          <span class="step-label">{{ step.label }}</span>
-          <div class="step-line" v-if="index < steps.length - 1"></div>
+      <div v-if="activeTasks.length === 0" class="empty-tasks">
+        <el-empty description="当前无后台任务" :image-size="80" />
+      </div>
+
+      <div v-else class="task-list">
+        <div v-for="task in activeTasks" :key="task.id" class="task-item">
+            <div class="task-header">
+                <span class="task-title">
+                    <span class="task-type-badge">{{ task.type === 'outline_generation' ? '大纲' : '章节' }}</span>
+                    {{ task.description }}
+                </span>
+                <span class="task-time">{{ new Date(task.updated_at).toLocaleTimeString() }}</span>
+            </div>
+            
+            <div class="task-body">
+                <!-- Stage Stepper -->
+                <div v-if="task.stages && task.stages.length > 0" class="task-stages">
+                    <el-steps :active="task.current_stage_index" finish-status="success" align-center simple>
+                        <el-step v-for="(stage, index) in task.stages" :key="index" :title="stage" />
+                    </el-steps>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="task-progress">
+                    <el-progress 
+                        :percentage="task.progress" 
+                        :status="task.status === 'failed' ? 'exception' : (task.status === 'completed' ? 'success' : '')"
+                        :stroke-width="12"
+                        striped
+                        striped-flow
+                        :duration="20"
+                    />
+                </div>
+                
+                <!-- Console/Log View -->
+                <div class="task-console">
+                    <div class="console-line">
+                        <span class="console-prompt">></span>
+                        <span class="console-time">[{{ new Date(task.updated_at).toLocaleTimeString() }}]</span>
+                        <span class="console-msg" :class="task.status">
+                            <el-icon v-if="task.status === 'processing'" class="is-loading"><Loading /></el-icon>
+                            {{ task.step }}
+                        </span>
+                    </div>
+                </div>
+            </div>
         </div>
       </div>
     </div>
@@ -673,5 +589,89 @@ onMounted(() => {
   0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.4); }
   70% { box-shadow: 0 0 0 10px rgba(255, 71, 87, 0); }
   100% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0); }
+}
+/* Task Item Styles */
+.task-item {
+    background: rgba(0,0,0,0.2);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+.task-title {
+    font-size: 1.1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.task-type-badge {
+    font-size: 0.8rem;
+    background: var(--primary-color);
+    color: #000;
+    padding: 0.1rem 0.5rem;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.task-time {
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.task-stages {
+    margin-bottom: 2rem;
+}
+
+/* Console View */
+.task-console {
+    background: #1e1e1e;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-top: 1.5rem;
+    font-family: 'Consolas', 'Monaco', monospace;
+    border: 1px solid #333;
+}
+
+.console-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.8rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.console-prompt {
+    color: var(--primary-color);
+    font-weight: bold;
+}
+
+.console-time {
+    color: #666;
+}
+
+.console-msg {
+    color: #ccc;
+}
+
+.console-msg.processing {
+    color: var(--primary-color);
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    50% { opacity: 0.5; }
+}
+
+.task-progress {
+    margin-top: 1rem;
 }
 </style>

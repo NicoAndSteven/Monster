@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
-import { MagicStick, Fold, Expand, VideoPlay, Plus, Delete, Document, List, Download, ArrowDown, Picture, Headset } from '@element-plus/icons-vue'
+import { MagicStick, Fold, Expand, VideoPlay, Plus, Delete, Document, List, Download, ArrowDown, Picture, Headset, Edit, Check, Close, Refresh, Loading } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/stores/projectStore'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
@@ -20,6 +20,88 @@ const generatedText = ref('')
 const isSaving = ref(false)
 const projectAssets = ref<any[]>([])
 const isAiEditing = ref(false)
+const currentTask = ref<any>(null)
+
+// Outline Editing Logic
+const isEditingOutline = ref(false)
+const outlineText = ref('')
+const isGeneratingOutline = ref(false)
+
+const startEditOutline = () => {
+    outlineText.value = projectStore.currentProject?.outline || ''
+    isEditingOutline.value = true
+}
+
+const cancelEditOutline = () => {
+    outlineText.value = projectStore.currentProject?.outline || ''
+    isEditingOutline.value = false
+}
+
+const saveOutline = async () => {
+    if (!projectStore.currentProject) return
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/outline`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outline: outlineText.value })
+        })
+        if (res.ok) {
+            ElMessage.success('大纲更新成功')
+            // Update store
+            if (projectStore.currentProject) {
+                projectStore.currentProject.outline = outlineText.value
+            }
+            isEditingOutline.value = false
+        } else {
+            ElMessage.error('更新失败')
+        }
+    } catch (e) {
+        ElMessage.error('网络错误')
+    }
+}
+
+const regenerateOutline = async () => {
+    if (!projectStore.currentProject) return
+    isGeneratingOutline.value = true
+    try {
+        const res = await fetch(`${API_BASE}/novels/${projectStore.currentProject.id}/outline/generate`, {
+            method: 'POST'
+        })
+        if (res.ok) {
+            const data = await res.json()
+            if (data.task_id) {
+                ElMessage.info('大纲生成任务已提交，正在处理中...')
+                await pollTask(data.task_id)
+                ElMessage.success('大纲生成完成')
+                
+                // Refresh project to get new outline
+                // Ideally we have a method to refresh current project
+                // For now, let's just fetch it manually and update store
+                 const novelRes = await fetch(`${API_BASE}/novels`)
+                 if (novelRes.ok) {
+                    const novels = await novelRes.json()
+                    const updated = novels.find((n: any) => n.id === projectStore.currentProject?.id)
+                    if (updated && projectStore.currentProject) {
+                        projectStore.currentProject.outline = updated.outline
+                    }
+                 }
+                 
+                 // Refresh outline text if editing
+                 if (isEditingOutline.value) {
+                     outlineText.value = projectStore.currentProject?.outline || ''
+                 }
+            } else {
+                 ElMessage.success('大纲生成任务已提交')
+            }
+        } else {
+            ElMessage.error('请求失败')
+        }
+    } catch (e: any) {
+        ElMessage.error(e.message || '网络错误')
+    } finally {
+        isGeneratingOutline.value = false
+    }
+}
 
 // Tiptap Editor Setup
 const editor = useEditor({
@@ -126,6 +208,28 @@ watch(() => projectStore.currentProject, (newVal) => {
 })
 
 // Methods
+const pollTask = async (taskId: string) => {
+    while (true) {
+        try {
+            const res = await fetch(`${API_BASE}/tasks/${taskId}`)
+            if (!res.ok) throw new Error("Failed to check status")
+            const task = await res.json()
+            
+            if (task.status === 'completed') {
+                return task.result
+            }
+            if (task.status === 'failed') {
+                throw new Error(task.step || "Task failed")
+            }
+            
+            // Wait 1s
+            await new Promise(resolve => setTimeout(resolve, 1000))
+        } catch (e) {
+            throw e
+        }
+    }
+}
+
 const playChapterAudio = async () => {
     if (!editor.value) return
     const text = editor.value.getText()
@@ -269,10 +373,10 @@ const regenerateImage = async () => {
   }
   
   isGeneratingImage.value = true
-  ElMessage.info('正在启动 RPA 绘图，请留意弹出的浏览器窗口...')
+  ElMessage.info('正在生成 AI 绘图，请稍候...')
   
   try {
-    const response = await fetch(`${API_BASE}/generate/image/rpa`, {
+    const response = await fetch(`${API_BASE}/generate/image`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -389,16 +493,28 @@ const confirmGeneration = async (choice: string) => {
 
         if (res.ok) {
             const data = await res.json()
+            
+            let content = ''
+            if (data.task_id) {
+                // Async polling
+                const result = await pollTask(data.task_id, (task) => currentTask.value = task)
+                currentTask.value = null
+                content = result.content
+            } else {
+                // Fallback for sync
+                content = data.chapter.content
+            }
+            
             await loadChapters(projectStore.currentProject.id)
             currentChapterId.value = nextChapterNum
-            generatedText.value = data.chapter.content
-            editor.value?.commands.setContent(data.chapter.content)
+            generatedText.value = content
+            editor.value?.commands.setContent(content)
             ElMessage.success('生成成功')
         } else {
             ElMessage.error('生成失败')
         }
-    } catch (e) {
-        ElMessage.error('请求出错')
+    } catch (e: any) {
+        ElMessage.error(e.message || '请求出错')
     }
 }
 
@@ -623,8 +739,34 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
           <el-tabs class="preview-tabs">
             <el-tab-pane label="大纲" name="outline">
                  <div class="outline-content-wrapper">
-                     <div v-if="projectStore.currentProject?.outline" class="outline-text">
-                         {{ projectStore.currentProject.outline }}
+                    <div class="outline-actions" style="margin-bottom: 10px; display: flex; gap: 5px;">
+                        <el-button v-if="!isEditingOutline" type="primary" size="small" @click="startEditOutline">
+                            <el-icon><Edit /></el-icon> 编辑
+                        </el-button>
+                        <template v-else>
+                            <el-button type="success" size="small" @click="saveOutline">
+                                <el-icon><Check /></el-icon> 保存
+                            </el-button>
+                            <el-button type="info" size="small" @click="cancelEditOutline">
+                                <el-icon><Close /></el-icon> 取消
+                            </el-button>
+                        </template>
+                        <el-button type="warning" size="small" @click="regenerateOutline" :loading="isGeneratingOutline">
+                            <el-icon><Refresh /></el-icon> 重生
+                        </el-button>
+                    </div>
+
+                     <div v-if="projectStore.currentProject?.outline" class="outline-text-container">
+                         <el-input
+                            v-if="isEditingOutline"
+                            v-model="outlineText"
+                            type="textarea"
+                            :rows="20"
+                            placeholder="在此编辑大纲..."
+                        />
+                         <div v-else class="markdown-body" style="white-space: pre-wrap; line-height: 1.6; max-height: 60vh; overflow-y: auto;">
+                             {{ projectStore.currentProject.outline }}
+                         </div>
                      </div>
                      <div v-else class="no-outline">
                          <el-empty description="大纲生成中或未创建大纲" />
@@ -713,10 +855,103 @@ const handleDeleteChapter = async (chapterId: number, event: Event) => {
         <p>未获取到有效选项，请重试。</p>
       </div>
     </el-dialog>
+    <!-- Task Progress Overlay -->
+    <div v-if="currentTask" class="task-overlay">
+      <div class="task-card glass-panel">
+        <div class="task-header">
+            <h3><el-icon class="is-loading mr-2"><Loading /></el-icon> {{ currentTask.description }}</h3>
+        </div>
+        
+        <div class="task-body">
+            <!-- Stage Stepper -->
+            <div v-if="currentTask.stages && currentTask.stages.length > 0" class="task-stages">
+                <el-steps :active="currentTask.current_stage_index" finish-status="success" align-center>
+                    <el-step v-for="(stage, index) in currentTask.stages" :key="index" :title="stage" />
+                </el-steps>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="task-progress-bar">
+                <el-progress 
+                    :percentage="currentTask.progress" 
+                    :status="currentTask.status === 'failed' ? 'exception' : (currentTask.status === 'completed' ? 'success' : '')"
+                    :stroke-width="15"
+                    striped
+                    striped-flow
+                    :duration="20"
+                />
+            </div>
+            
+            <!-- Console/Log View -->
+            <div class="task-console-mini">
+                <span class="console-prompt">></span>
+                <span class="console-msg">{{ currentTask.step }}</span>
+            </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
 <style scoped>
+/* Task Overlay */
+.task-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(5px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+.task-card {
+    width: 600px;
+    max-width: 90vw;
+    background: #1a1a1a;
+    border: 1px solid var(--primary-color);
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+    padding: 2rem;
+    border-radius: 12px;
+}
+
+.task-header h3 {
+    margin: 0 0 1.5rem 0;
+    color: var(--primary-color);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.task-stages {
+    margin-bottom: 2rem;
+}
+
+.task-progress-bar {
+    margin-bottom: 1.5rem;
+}
+
+.task-console-mini {
+    background: #000;
+    padding: 1rem;
+    border-radius: 4px;
+    font-family: monospace;
+    color: #ccc;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.console-prompt {
+    color: var(--primary-color);
+    font-weight: bold;
+}
+
 /* Plot Choice Styles */
 .plot-choices {
   display: flex;
