@@ -81,10 +81,6 @@ npm start
 ```
 *注意：此命令需要您的命令行环境中能够直接运行 `uvicorn`（即已激活 Python 虚拟环境或安装在全局）。*
 
-## 📖 文档说明
-
-*   **设计理念**：请参阅 `docs/design_prompt.md` 查看原始的 UI/UX 设计愿景与提示词。
-
 ## 🤝 贡献指南
 
 欢迎提交 Issue 或 Pull Request 来帮助改进这个平台。
