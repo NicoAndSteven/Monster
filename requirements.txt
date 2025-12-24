@@ -1,0 +1,12 @@
+fastapi>=0.95.0
+uvicorn>=0.22.0
+pydantic>=1.10.0
+python-docx>=0.8.11
+edge-tts>=6.1.9
+dashscope>=1.14.0
+ebooklib>=0.17.1
+gradio_client>=0.10.0
+httpx>=0.24.0
+python-multipart>=0.0.6
+aiofiles>=23.1.0
+requests>=2.31.0
